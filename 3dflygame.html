@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple 3D Flying Game</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #87CEEB; /* Sky blue background (fallback) */
+        }
+        #score {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 24px;
+            font-family: Arial, sans-serif;
+            color: white;
+        }
+        #gameOver {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 36px;
+            font-family: Arial, sans-serif;
+            color: red;
+            display: none;
+        }
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 18px;
+            font-family: Arial, sans-serif;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="score">Score: 0</div>
+    <div id="gameOver">Game Over! Press R to Restart</div>
+    <div id="hud">
+        <p>FPS: <span id="fps">0</span></p>
+        <p>Health: <span id="health">100</span></p>
+        <p>Score: <span id="hudScore">0</span></p>
+        <p>Altitude: <span id="altitude">0</span></p>
+        <p>Speed: <span id="speed">0</span></p>
+        <p>Vertical Speed: <span id="verticalSpeed">0</span></p>
+        <p>Controls:</p>
+        <ul>
+            <li>Throttle Up: W</li>
+            <li>Throttle Down: S</li>
+            <li>Turn Left: A</li>
+            <li>Turn Right: D</li>
+            <li>Pitch Up: Arrow Up</li>
+            <li>Pitch Down: Arrow Down</li>
+            <li>Shoot Missiles: Space</li>
+        </ul>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script>
+        // Three.js setup
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Game variables
+        let score = 0;
+        let health = 100;
+        let gameOver = false;
+        const forwardSpeed = 0.1; // Constant forward speed
+        const turnSpeed = 0.02; // Speed of turning left/right
+        const pitchSpeed = 0.02; // Speed of pitching up/down
+        const drag = 0.98; // Drag to simulate air resistance
+        const maxHealth = 100;
+        const missileSpeed = 1;
+        const missiles = [];
+
+        // Create a more detailed plane geometry
+        function createPlane() {
+            const planeGroup = new THREE.Group();
+
+            // Body (elongated cylinder)
+            const bodyGeometry = new THREE.CylinderGeometry(0.2, 0.2, 2, 16);
+            const bodyMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // Red body
+            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            body.rotation.z = Math.PI / 2; // Rotate to lie horizontally
+            planeGroup.add(body);
+
+            // Wings (flat rectangles)
+            const wingGeometry = new THREE.PlaneGeometry(2, 0.5);
+            const wingMaterial = new THREE.MeshBasicMaterial({ color: 0xaaaaaa, side: THREE.DoubleSide }); // Gray wings
+            const leftWing = new THREE.Mesh(wingGeometry, wingMaterial);
+            const rightWing = new THREE.Mesh(wingGeometry, wingMaterial);
+            leftWing.position.set(-0.5, 0, 0);
+            rightWing.position.set(0.5, 0, 0);
+            planeGroup.add(leftWing);
+            planeGroup.add(rightWing);
+
+            // Tail (smaller flat rectangles)
+            const tailGeometry = new THREE.PlaneGeometry(0.5, 0.3);
+            const tailMaterial = new THREE.MeshBasicMaterial({ color: 0xaaaaaa, side: THREE.DoubleSide }); // Gray tail
+            const tail = new THREE.Mesh(tailGeometry, tailMaterial);
+            tail.position.set(0, 0, -0.8);
+            tail.rotation.x = Math.PI / 2; // Rotate to be vertical
+            planeGroup.add(tail);
+
+            return planeGroup;
+        }
+
+        const plane = {
+            mesh: createPlane(),
+            velocityX: 0,
+            velocityY: 0,
+            velocityZ: 0,
+            rotationX: 0, // Pitch (up/down)
+            rotationY: 0  // Yaw (left/right)
+        };
+        let cubes = [];
+        let frameCount = 0;
+
+        // Add plane to scene
+        scene.add(plane.mesh);
+
+        // Camera setup (third-person view)
+        camera.position.set(0, 5, 8); // Position camera behind and above the plane
+        camera.lookAt(plane.mesh.position);
+
+        // Add ground (brown)
+        const groundGeometry = new THREE.PlaneGeometry(100, 1000);
+        const groundMaterial = new THREE.MeshBasicMaterial({ color: 0x8B4513 }); // Brown color
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = -Math.PI / 2; // Rotate to lie flat
+        ground.position.y = -15; // Position below the plane
+        scene.add(ground);
+
+        // Add runway (gray with white markings)
+        const runwayGeometry = new THREE.PlaneGeometry(5, 100); // Narrow and long
+        const runwayMaterial = new THREE.MeshBasicMaterial({ color: 0x808080 }); // Gray color
+        const runway = new THREE.Mesh(runwayGeometry, runwayMaterial);
+        runway.rotation.x = -Math.PI / 2;
+        runway.position.y = -14.9; // Slightly above ground to avoid z-fighting
+        runway.position.z = -50; // Position ahead of the plane
+        scene.add(runway);
+
+        // Add runway markings (white dashes)
+        const markingGeometry = new THREE.PlaneGeometry(0.5, 2);
+        const markingMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        for (let i = 0; i < 10; i++) {
+            const marking = new THREE.Mesh(markingGeometry, markingMaterial);
+            marking.rotation.x = -Math.PI / 2;
+            marking.position.y = -14.8;
+            marking.position.z = -50 + i * 10; // Space markings along the runway
+            scene.add(marking);
+        }
+
+        // Add skybox for a more immersive blue sky
+        function createSkybox() {
+            const skyboxGeometry = new THREE.BoxGeometry(1000, 1000, 1000);
+            const skyboxMaterials = [];
+            for (let i = 0; i < 6; i++) {
+                // Create a gradient texture for the sky (blue at the top, lighter at the bottom)
+                const canvas = document.createElement('canvas');
+                canvas.width = 512;
+                canvas.height = 512;
+                const context = canvas.getContext('2d');
+                const gradient = context.createLinearGradient(0, 0, 0, canvas.height);
+                gradient.addColorStop(0, '#1E90FF'); // Deep blue at the top
+                gradient.addColorStop(1, '#87CEEB'); // Light blue at the bottom
+                context.fillStyle = gradient;
+                context.fillRect(0, 0, canvas.width, canvas.height);
+                const texture = new THREE.Texture(canvas);
+                texture.needsUpdate = true;
+                skyboxMaterials.push(new THREE.MeshBasicMaterial({ map: texture, side: THREE.BackSide }));
+            }
+            const skybox = new THREE.Mesh(skyboxGeometry, skyboxMaterials);
+            scene.add(skybox);
+        }
+        createSkybox();
+
+        // List of 5 of the 99 Names of Allah
+        const namesOfAllah = [
+           "A1", //"Ar-Rahman", // The Most Merciful
+           "A2",  //"Ar-Raheem", // The Most Compassionate
+           "A3",  //"Al-Malik",  // The King
+           "A4", // "Al-Quddus", // The Most Holy
+           "A5", // "As-Salaam"  // The Source of Peace
+        ];
+        let nameIndex = 0; // To cycle through names
+
+        // Function to create a canvas texture with text (increased size)
+        function createTextTexture(text) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 5124; // Increased canvas size for better resolution
+            canvas.height = 5124;
+            const context = canvas.getContext('2d');
+            context.fillStyle = 'green';
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            context.fillStyle = 'white';
+            context.font = 'bold 600px Arial'; // Increased font size
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillText(text, canvas.width / 2, canvas.height / 2);
+            const texture = new THREE.Texture(canvas);
+            texture.needsUpdate = true;
+            return texture;
+        }
+
+        // Particle system for cube trails
+        function createParticleTrail() {
+            const particles = new THREE.Group();
+            const particleGeometry = new THREE.SphereGeometry(0.05, 8, 8);
+            const particleMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 }); // Yellow particles
+            for (let i = 0; i < 10; i++) {
+                const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+                particle.position.set(0, 0, 0);
+                particle.life = Math.random() * 0.5 + 0.5; // Random life between 0.5 and 1
+                particles.add(particle);
+            }
+            scene.add(particles);
+            return particles;
+        }
+
+        // Generate random floating cubes with enhanced behavior
+        function generateCube() {
+            const cubeSize = 1;
+            const isCollectible = Math.random() > 0.3; // 70% chance of being a collectible
+            const textTexture = isCollectible ? createTextTexture(namesOfAllah[nameIndex]) : null;
+            nameIndex = (nameIndex + 1) % namesOfAllah.length; // Cycle through names
+            const cube = new THREE.Mesh(
+                new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize),
+                new THREE.MeshBasicMaterial({ 
+                    map: isCollectible ? textTexture : null, 
+                    color: isCollectible ? 0x00ff00 : 0xff0000 // Green for collectibles, red for obstacles
+                })
+            );
+            // Randomly position cube in 3D space ahead of the plane
+            cube.position.set(
+                (Math.random() - 0.5) * 20, // X: -10 to 10
+                (Math.random() - 0.5) * 20, // Y: -10 to 10
+                plane.mesh.position.z - 20 // Z: Ahead of the plane
+            );
+            cube.passed = false;
+            cube.isCollectible = isCollectible;
+
+            // Add movement behavior
+            cube.movementType = Math.floor(Math.random() * 3); // 0: Horizontal, 1: Vertical, 2: Circular
+            cube.movementSpeed = Math.random() * 0.05 + 0.02; // Random speed
+            cube.movementAmplitude = Math.random() * 2 + 1; // Random amplitude
+            cube.movementPhase = Math.random() * Math.PI * 2; // Random phase
+
+            // Add rotation behavior
+            cube.rotationSpeed = new THREE.Vector3(
+                (Math.random() - 0.5) * 0.05, // X rotation
+                (Math.random() - 0.5) * 0.05, // Y rotation
+                (Math.random() - 0.5) * 0.05  // Z rotation
+            );
+
+            // Add scaling behavior
+            cube.scaleFactor = 1;
+            cube.scaleSpeed = Math.random() * 0.02 + 0.01;
+            cube.scalePhase = Math.random() * Math.PI * 2;
+
+            // Add particle trail
+            cube.trail = createParticleTrail();
+
+            scene.add(cube);
+            cubes.push(cube);
+        }
+
+        // Handle input
+        const keys = {};
+        document.addEventListener('keydown', (e) => {
+            keys[e.code] = true;
+            if (e.code === 'KeyR' && gameOver) {
+                restartGame();
+            }
+            if (e.code === 'Space') {
+                shootMissile();
+            }
+        });
+        document.addEventListener('keyup', (e) => {
+            keys[e.code] = false;
+        });
+// Email prompt after 15 seconds with regex validation
+setTimeout(() => {
+    if (!gameOver) {
+        let email = prompt("Please enter your email to continue playing:");
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/; // Basic email format check
+        while (email && !emailRegex.test(email)) {
+            email = prompt("Invalid email. Please enter a valid email to continue playing:");
+        }
+        if (email) {
+            console.log("User email submitted:", email);
+            // You can add code here to send the email to a server if needed
+        } else {
+            alert("Email is required to continue.");
+            gameOver = true;
+            document.getElementById('gameOver').style.display = 'block';
+        }
+    }
+}, 5000);
+        // Shoot missile
+        function shootMissile() {
+            const missileGeometry = new THREE.CylinderGeometry(0.05, 0.05, 1, 8);
+            const missileMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+            const missile = new THREE.Mesh(missileGeometry, missileMaterial);
+            missile.position.copy(plane.mesh.position);
+            missile.rotation.copy(plane.mesh.rotation);
+            missile.velocity = new THREE.Vector3(0, 0, -missileSpeed);
+            missiles.push(missile);
+            scene.add(missile);
+        }
+
+        // Update missiles
+        function updateMissiles() {
+            missiles.forEach((missile, index) => {
+                missile.position.add(missile.velocity);
+                if (missile.position.z < plane.mesh.position.z - 100) {
+                    scene.remove(missile);
+                    missiles.splice(index, 1);
+                }
+            });
+        }
+
+        // Update HUD
+        function updateHUD() {
+            document.getElementById('fps').textContent = Math.round(1000 / (performance.now() - lastFrameTime));
+            document.getElementById('health').textContent = health;
+            document.getElementById('hudScore').textContent = score;
+            document.getElementById('altitude').textContent = Math.round(plane.mesh.position.y);
+            document.getElementById('speed').textContent = Math.round(forwardSpeed * 100);
+            document.getElementById('verticalSpeed').textContent = Math.round(plane.velocityY * 100);
+        }
+
+        // Game loop
+        let lastFrameTime = performance.now();
+        function update() {
+            if (gameOver) return;
+
+            // Handle plane movement (pitch and yaw)
+            if (keys['ArrowDown'] || keys['KeyS']) {
+                plane.velocityY += pitchSpeed; // Pitch up
+                plane.rotationX = Math.min(plane.rotationX + 0.02, Math.PI / 4); // Limit pitch
+            }
+            if (keys['ArrowUp'] || keys['KeyW']) {
+                plane.velocityY -= pitchSpeed; // Pitch down
+                plane.rotationX = Math.max(plane.rotationX - 0.02, -Math.PI / 4); // Limit pitch
+            }
+            if (keys['ArrowLeft'] || keys['KeyA']) {
+                plane.velocityX -= turnSpeed; // Yaw left (fixed direction)
+                plane.rotationY = Math.min(plane.rotationY + 0.02, Math.PI / 4); // Limit yaw
+            }
+            if (keys['ArrowRight'] || keys['KeyD']) {
+                plane.velocityX += turnSpeed; // Yaw right (fixed direction)
+                plane.rotationY = Math.max(plane.rotationY - 0.02, -Math.PI / 4); // Limit yaw
+            }
+
+            // Apply drag to simulate air resistance
+            plane.velocityX *= drag;
+            plane.velocityY *= drag;
+
+            // Apply constant forward speed
+            plane.velocityZ = -forwardSpeed;
+
+            // Update plane position
+            plane.mesh.position.x += plane.velocityX;
+            plane.mesh.position.y += plane.velocityY;
+            plane.mesh.position.z += plane.velocityZ;
+
+            // Update plane rotation (visual feedback)
+            plane.mesh.rotation.x = plane.rotationX;
+            plane.mesh.rotation.y = plane.rotationY;
+
+            // Smoothly return rotation to neutral when no input
+            if (!keys['ArrowUp'] && !keys['ArrowDown'] && !keys['KeyW'] && !keys['KeyS']) {
+                plane.rotationX *= 0.9;
+            }
+            if (!keys['ArrowLeft'] && !keys['ArrowRight'] && !keys['KeyA'] && !keys['KeyD']) {
+                plane.rotationY *= 0.9;
+            }
+
+            // Keep plane within loose bounds
+            plane.mesh.position.x = Math.max(Math.min(plane.mesh.position.x, 15), -15);
+            plane.mesh.position.y = Math.max(Math.min(plane.mesh.position.y, 15), -15);
+
+            // Update camera to follow the plane
+            camera.position.set(
+                plane.mesh.position.x,
+                plane.mesh.position.y + 2,
+                plane.mesh.position.z + 5
+            );
+            camera.lookAt(plane.mesh.position);
+
+            // Generate cubes every 50 frames
+            if (frameCount % 50 === 0) {
+                generateCube();
+            }
+
+            // Update cubes
+            cubes.forEach((cube, index) => {
+                // Update movement behavior
+                switch (cube.movementType) {
+                    case 0: // Horizontal motion
+                        cube.position.x += Math.sin(frameCount * cube.movementSpeed + cube.movementPhase) * cube.movementAmplitude * 0.02;
+                        break;
+                    case 1: // Vertical motion
+                        cube.position.y += Math.sin(frameCount * cube.movementSpeed + cube.movementPhase) * cube.movementAmplitude * 0.02;
+                        break;
+                    case 2: // Circular motion
+                        cube.position.x += Math.sin(frameCount * cube.movementSpeed + cube.movementPhase) * cube.movementAmplitude * 0.02;
+                        cube.position.z += Math.cos(frameCount * cube.movementSpeed + cube.movementPhase) * cube.movementAmplitude * 0.02;
+                        break;
+                }
+
+                // Update rotation behavior
+                cube.rotation.x += cube.rotationSpeed.x;
+                cube.rotation.y += cube.rotationSpeed.y;
+                cube.rotation.z += cube.rotationSpeed.z;
+
+                // Update scaling behavior
+                cube.scaleFactor = 1 + Math.sin(frameCount * cube.scaleSpeed + cube.scalePhase) * 0.3;
+                cube.scale.set(cube.scaleFactor, cube.scaleFactor, cube.scaleFactor);
+
+                // Update particle trail
+                cube.trail.position.copy(cube.position);
+                cube.trail.children.forEach(particle => {
+                    particle.life -= 0.02;
+                    if (particle.life <= 0) {
+                        particle.position.set(0, 0, 0);
+                        particle.life = Math.random() * 0.5 + 0.5;
+                    } else {
+                        particle.position.add(new THREE.Vector3(
+                            (Math.random() - 0.5) * 0.1,
+                            (Math.random() - 0.5) * 0.1,
+                            (Math.random() - 0.5) * 0.1
+                        ));
+                    }
+                });
+
+                // Check if plane passed the cube
+                if (!cube.passed && cube.position.z > plane.mesh.position.z) {
+                    if (cube.isCollectible) {
+                        score += 1;
+                        document.getElementById('score').textContent = `Score: ${score}`;
+                    }
+                    cube.passed = true;
+                }
+
+                // Collision detection (simple AABB)
+                const planeBox = new THREE.Box3().setFromObject(plane.mesh);
+                const cubeBox = new THREE.Box3().setFromObject(cube);
+
+                if (planeBox.intersectsBox(cubeBox)) {
+                    if (cube.isCollectible) {
+                        // Collectible: Remove cube and award points
+                        scene.remove(cube);
+                        cube.trail.children.forEach(particle => scene.remove(particle));
+                        scene.remove(cube.trail);
+                        cube.geometry.dispose();
+                        cube.material.dispose();
+                        cubes.splice(index, 1);
+                        score += 5; // Bonus points for collecting
+                        document.getElementById('score').textContent = `Score: ${score}`;
+                    } else {
+                        // Obstacle: Game over
+                        gameOver = true;
+                        document.getElementById('gameOver').style.display = 'block';
+                    }
+                }
+
+                // Remove cubes that are far behind the plane
+                if (cube.position.z > plane.mesh.position.z + 10) {
+                    scene.remove(cube);
+                    cube.trail.children.forEach(particle => scene.remove(particle));
+                    scene.remove(cube.trail);
+                    cube.geometry.dispose();
+                    cube.material.dispose();
+                    cubes.splice(index, 1);
+                }
+            });
+
+            // Update HUD
+            updateHUD();
+
+            // Update missiles
+            updateMissiles();
+
+            frameCount++;
+            lastFrameTime = performance.now();
+            renderer.render(scene, camera);
+            requestAnimationFrame(update);
+        }
+
+        // Restart game
+        function restartGame() {
+            score = 0;
+            plane.mesh.position.set(0, 0, 0);
+            plane.velocityX = 0;
+            plane.velocityY = 0;
+            plane.velocityZ = 0;
+            plane.rotationX = 0;
+            plane.rotationY = 0;
+            cubes.forEach(cube => {
+                scene.remove(cube);
+                cube.trail.children.forEach(particle => scene.remove(particle));
+                scene.remove(cube.trail);
+                cube.geometry.dispose();
+                cube.material.dispose();
+            });
+            cubes = [];
+            gameOver = false;
+            document.getElementById('gameOver').style.display = 'none';
+            document.getElementById('score').textContent = `Score: ${score}`;
+            frameCount = 0;
+            update();
+        }
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Start the game
+        update();
+    </script>
+</body>
+</html>
